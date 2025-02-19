@@ -3,11 +3,9 @@ import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 import numpy as np
-from collections import deque
+from collections import deque, namedtuple
 import gymnasium as gym
 import torch.optim as optim
-from collections import namedtuple, deque
-import random
 import random
 
 # %%
@@ -20,17 +18,19 @@ TAU = 0.005
 GAMMA = 0.99
 
 # %%
-Transition = namedtuple("Transition", ("state", "action", "next_state", "reward"))
+Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
 
 
 class ReplayMemory:
     def __init__(self, capacity):
+        self.distribution = np.zeros(capacity)
         self.memory = deque(maxlen=capacity)
 
     def append(self, *args):
         self.memory.append(Transition(*args))
 
     def sample(self, batch_size):
+        np.random.sample(batch_size, )
         return random.sample(self.memory, batch_size)
 
     def __len__(self):
@@ -57,7 +57,7 @@ class DQN(nn.Module):
 
 
 # %%
-env = gym.make("CartPole-v1")
+env = gym.make('CartPole-v1')
 
 n_actions = env.action_space.n
 n_observations = env.observation_space.shape[0]
@@ -77,9 +77,7 @@ steps_done = 0
 def select_action(state):
     global steps_done
 
-    eps = EPS_END + (EPS_START - EPS_END) * np.exp(
-        -1.0 * steps_done / EPS_DECAY
-    )  # try to look at how eps is updated
+    eps = EPS_END + (EPS_START - EPS_END) * np.exp(-1.0 * steps_done / EPS_DECAY)  # try to look at how eps is updated
     steps_done += 1
 
     if random.random() < eps:
@@ -98,26 +96,22 @@ def optimize_model():
     transitions = replay_memory.sample(BATCH_SIZE)
     batch = Transition(*zip(*transitions))
 
-    non_final_mask = torch.tensor(
-        list(map(lambda state: state is not None, batch.next_state))
-    )
+    non_final_mask = torch.tensor(list(map(lambda state: state is not None, batch.next_state)))
 
-    non_final_next_states = torch.cat([s for s in batch.next_state if s is not None])
+    non_final_next_states = torch.cat([s for s in batch.next_state if s is not None])  # Bx4
 
     state_batch = torch.cat(batch.state)  # Bx4
     action_batch = torch.cat(batch.action)  # Bx1
     reward_batch = torch.cat(batch.reward)  # B
 
-    q_values = policy_net(state_batch).gather(1, action_batch)  # 128x1
+    q_values = policy_net(state_batch).gather(1, action_batch)  # Bx1
+    best_next_actions = torch.argmax(policy_net(non_final_next_states), dim=1).unsqueeze(1)  # Bx1
+    y = torch.zeros(BATCH_SIZE)
+    y[non_final_mask] = GAMMA * target_net(non_final_next_states).gather(1, best_next_actions).squeeze(1).detach()
 
-    next_q_values = torch.zeros(BATCH_SIZE)  # 128
-    next_q_values[non_final_mask] = (
-        target_net(non_final_next_states).max(1).values.detach()
-    )  # 128
+    y += reward_batch
 
-    expected_q_values = reward_batch + GAMMA * next_q_values  # 128
-
-    loss = criterion(q_values, expected_q_values)
+    loss = criterion(q_values, y)
 
     opt.zero_grad()
     loss.backward()
@@ -140,14 +134,12 @@ for episode in range(num_episodes):
 
         next_state, reward, terminated, truncated, _ = env.step(action.item())
         done = terminated or truncated
-        if terminated:
-            reward = -10
+        # if terminated:
+        #     reward = -10
 
         reward = torch.tensor(reward, dtype=torch.float32).unsqueeze(0)  # (1, 1)
 
-        next_state = (
-            None if done else torch.tensor(next_state, dtype=torch.float32).unsqueeze(0)
-        )
+        next_state = None if done else torch.tensor(next_state, dtype=torch.float32).unsqueeze(0)
 
         replay_memory.append(state, action, next_state, reward)
 
@@ -159,14 +151,11 @@ for episode in range(num_episodes):
         policy_net_state_dict = policy_net.state_dict()
 
         for key in target_net_state_dict:
-            target_net_state_dict[key] = (
-                TAU * policy_net_state_dict[key]
-                + (1 - TAU) * target_net_state_dict[key]
-            )
+            target_net_state_dict[key] = TAU * policy_net_state_dict[key] + (1 - TAU) * target_net_state_dict[key]
         R += reward
 
     total_rewards.append(R.item())
-    print(f"episode: {episode}, R: {R.item()}")
+    print(f'episode: {episode}, R: {R.item()}')
 
 plt.plot(total_rewards)
 plt.show()
