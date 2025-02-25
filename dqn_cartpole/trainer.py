@@ -3,10 +3,11 @@ import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 import numpy as np
-from collections import deque, namedtuple
+from collections import namedtuple
 import gymnasium as gym
 import torch.optim as optim
 import random
+from torchrl.data import PrioritizedReplayBuffer, ListStorage
 
 # %%
 LR = 1e-3
@@ -18,26 +19,8 @@ TAU = 0.005
 GAMMA = 0.99
 
 # %%
-Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
-
-
-class ReplayMemory:
-    def __init__(self, capacity):
-        self.distribution = np.zeros(capacity)
-        self.memory = deque(maxlen=capacity)
-
-    def append(self, *args):
-        self.memory.append(Transition(*args))
-
-    def sample(self, batch_size):
-        np.random.sample(batch_size, )
-        return random.sample(self.memory, batch_size)
-
-    def __len__(self):
-        return len(self.memory)
-
-    def __getitem__(self, i):
-        return self.memory[i]
+Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward', 'done'))
+buffer = PrioritizedReplayBuffer(alpha=0.7, beta=0.9, storage=ListStorage(10000))
 
 
 class DQN(nn.Module):
@@ -68,7 +51,6 @@ target_net.load_state_dict(policy_net.state_dict())
 
 opt = optim.AdamW(policy_net.parameters(), lr=LR, amsgrad=True)
 criterion = nn.HuberLoss()
-replay_memory = ReplayMemory(2000)
 
 # %%
 steps_done = 0
@@ -81,37 +63,38 @@ def select_action(state):
     steps_done += 1
 
     if random.random() < eps:
-        return torch.tensor([[env.action_space.sample()]])
+        return torch.tensor([[env.action_space.sample()]]).view(1)
 
     with torch.no_grad():  # attempt without this
         # why this weird shape? why not get the item directly
-        return torch.argmax(policy_net(state)).view(1, 1)
+        return torch.argmax(policy_net(state)).view(1)
 
 
 # %%
 def optimize_model():
-    if len(replay_memory) < BATCH_SIZE:
+    if len(buffer) < BATCH_SIZE:
         return
 
-    transitions = replay_memory.sample(BATCH_SIZE)
-    batch = Transition(*zip(*transitions))
+    batch, info = buffer.sample(BATCH_SIZE, return_info=True)
 
-    non_final_mask = torch.tensor(list(map(lambda state: state is not None, batch.next_state)))
+    state_batch = batch.state  # Bx4
+    action_batch = batch.action  # Bx1
+    reward_batch = batch.reward  # B
+    done_batch = batch.done  # B
 
-    non_final_next_states = torch.cat([s for s in batch.next_state if s is not None])  # Bx4
-
-    state_batch = torch.cat(batch.state)  # Bx4
-    action_batch = torch.cat(batch.action)  # Bx1
-    reward_batch = torch.cat(batch.reward)  # B
+    not_final_mask = ~done_batch
+    non_final_next_states = state_batch[not_final_mask]  # Bx4
 
     q_values = policy_net(state_batch).gather(1, action_batch)  # Bx1
     best_next_actions = torch.argmax(policy_net(non_final_next_states), dim=1).unsqueeze(1)  # Bx1
-    y = torch.zeros(BATCH_SIZE)
-    y[non_final_mask] = GAMMA * target_net(non_final_next_states).gather(1, best_next_actions).squeeze(1).detach()
 
+    y = torch.zeros(BATCH_SIZE)  # (B)
+    y[not_final_mask] = GAMMA * target_net(non_final_next_states).gather(1, best_next_actions).squeeze(1).detach()
     y += reward_batch
 
-    loss = criterion(q_values, y)
+    td_err = (y.unsqueeze(1) - q_values).abs().detach() + 1e-6  # Bx1
+    buffer.update_priority(info['index'], td_err)
+    loss = (info['_weight'] * criterion(q_values, y.unsqueeze(1)) * 10).mean()
 
     opt.zero_grad()
     loss.backward()
@@ -125,23 +108,23 @@ num_episodes = 2000
 total_rewards = []
 for episode in range(num_episodes):
     state, _ = env.reset()
-    state = torch.tensor(state, dtype=torch.float32).unsqueeze(0)  # (1, 4)
+    state = torch.tensor(state, dtype=torch.float32)  # (4)
 
     done = False
     R = 0
     while not done:
-        action = select_action(state)  # (1, 1)
+        action = select_action(state)  # (1)
 
         next_state, reward, terminated, truncated, _ = env.step(action.item())
         done = terminated or truncated
         # if terminated:
         #     reward = -10
 
-        reward = torch.tensor(reward, dtype=torch.float32).unsqueeze(0)  # (1, 1)
+        reward = torch.tensor(reward, dtype=torch.float32)  # (1)
 
-        next_state = None if done else torch.tensor(next_state, dtype=torch.float32).unsqueeze(0)
+        next_state = torch.tensor(next_state, dtype=torch.float32)
 
-        replay_memory.append(state, action, next_state, reward)
+        buffer.add(Transition(state, action, next_state, reward, torch.tensor(terminated or truncated)))
 
         state = next_state
 
@@ -159,3 +142,6 @@ for episode in range(num_episodes):
 
 plt.plot(total_rewards)
 plt.show()
+
+# %%
+torch.save(policy_net.state_dict(), './cartpole.pth')
