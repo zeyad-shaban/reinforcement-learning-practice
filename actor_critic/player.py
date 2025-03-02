@@ -1,6 +1,7 @@
 import torch
 import gymnasium as gym
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 env = gym.make('CartPole-v1', render_mode='human')
@@ -9,41 +10,56 @@ n_actions = env.action_space.n
 
 
 # %%
-class Actor2Critic(nn.Module):
-    def __init__(self, in_channels, out_channels):
+
+# class Policy(nn.Module):
+#     """
+#     implements both actor and critic in one model
+#     """
+
+#     def __init__(self):
+#         super(Policy, self).__init__()
+#         self.affine1 = nn.Linear(4, 128)
+#         self.action_head = nn.Linear(128, 2)
+#         self.value_head = nn.Linear(128, 1)
+#         self.saved_actions = []
+#         self.rewards = []
+
+#     def forward(self, x):
+#         x = F.relu(self.affine1(x))
+#         action_prob = F.softmax(self.action_head(x), dim=-1)
+#         state_values = self.value_head(x)
+#         return action_prob, state_values
+
+
+
+class Policy(nn.Module):
+    def __init__(self):
         super().__init__()
 
-        self.backbone = nn.Sequential(
-            nn.Linear(in_channels, 128),
+        self.body = nn.Sequential(
+            nn.Linear(4, 128),
             nn.ReLU(),
-            #
             nn.Linear(128, 64),
             nn.ReLU(),
-            #
-            nn.Linear(64, 32),
-            nn.ReLU(),
         )
 
-        self.actor_head = nn.Sequential(
-            nn.Linear(32, 16),
-            nn.ReLU(),
-            nn.Linear(16, out_channels),
-        )
+        self.action_head = nn.Linear(64, 2)
+        self.value_head = nn.Linear(64, 1)
 
-        self.critic_head = nn.Sequential(
-            nn.Linear(32, 16),
-            nn.ReLU(),
-            nn.Linear(16, 1),
-        )
+        self.saved_actions = []
+        self.rewards = []
 
     def forward(self, x):
-        y = self.backbone(x)
+        y = self.body(x)
 
-        return self.actor_head(y)
+        action = self.action_head(y)
+        value = self.value_head(y)
+
+        return action, value
 
 
-net = Actor2Critic(n_observations, n_actions)
-net.load_state_dict(torch.load('a2c.pth', weights_only=True))
+net = Policy()
+net.load_state_dict(torch.load('dummy.pth', weights_only=True))
 
 while True:
     state, _ = env.reset()
@@ -51,7 +67,7 @@ while True:
     R = 0
     while True:
         state = torch.tensor(state)[None]
-        action = torch.argmax(net(state)).item()
+        action = torch.argmax(net(state)[0]).item()
         state, reward, terminated, truncated, _ = env.step(action)
 
         R += reward
